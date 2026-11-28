@@ -18,14 +18,19 @@ public class ForgottenThird : ModuleRules
 		// folder at run time. Stage it next to the packaged game at the same relative path.
 		RuntimeDependencies.Add("$(ProjectDir)/Data/...", StagedFileType.NonUFS);
 
+		// Landscape, for every target: the world eye shot reads a landscape's material in game, and the rain-cover ring's
+		// dev-only landscape reads build in a non-editor Development game (ruling 13200).
+		PrivateDependencyModuleNames.Add("Landscape");
+
 		if (Target.bBuildEditor)
 		{
 			// The demo-world, character-import and rig commandlets.
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "AssetTools", "IKRig", "IKRigEditor" });
 
-			// FTBuildExploreWorld imports each big world's ground as a Landscape. FTBuildMassingWorld's read-back includes
-			// LandscapeEdit.h, which includes InstancedFoliageActor.h: Foliage is only a private dependency of Landscape.
-			PrivateDependencyModuleNames.AddRange(new string[] { "Landscape", "Foliage" });
+			// FTBuildExploreWorld imports each big world's ground as a Landscape (Landscape itself is named above, for every
+			// target). FTBuildMassingWorld's read-back includes LandscapeEdit.h, which includes InstancedFoliageActor.h: Foliage
+			// is only a private dependency of Landscape.
+			PrivateDependencyModuleNames.Add("Foliage");
 
 			// FTBuildMassingWorld builds a sloped massing box's own static mesh from a mesh description.
 			PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription" });

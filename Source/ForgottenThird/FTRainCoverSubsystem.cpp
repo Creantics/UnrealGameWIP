@@ -1045,12 +1045,13 @@ void UFTRainCoverSubsystem::TileFarLoop()
 			continue;
 		}
 		int32 FindHits = 0;
-		float MaxZ = 0.f;
+		float MaxZ = 0.f, MinZ = 0.f;
 		for (const float D : TileScratch)
 		{
 			if (D < kTileFindFarM)
 			{
 				MaxZ = FindHits == 0 ? kTileFindTopM - D : FMath::Max(MaxZ, kTileFindTopM - D);
+				MinZ = FindHits == 0 ? kTileFindTopM - D : FMath::Min(MinZ, kTileFindTopM - D);
 				++FindHits;
 			}
 		}
@@ -1069,7 +1070,10 @@ void UFTRainCoverSubsystem::TileFarLoop()
 				I == 0 ? TEXT(" cold") : TEXT(""), FE, FR);
 			continue;
 		}
-		F.topZ = MaxZ + kTileMarginM;
+		// The clamp at this (dev-only) call site, with its own margin. This path keys nothing, so it has no bounds: the top
+		// stays the find's max + margin.
+		const ftcore::RainCoverTop Top = ftcore::rainCoverTopClamp(MaxZ, false, 0.0, MinZ, Spec.depthM, kTileMarginM);
+		F.topZ = float(Top.topZ);
 		TileTop[I] = F.topZ;
 		TileFloor[I] = F.topZ - Spec.depthM;
 		double CE = 0.0, CR = 0.0;
@@ -1762,10 +1766,16 @@ void UFTRainCoverSubsystem::TruthTick(UWorld& World)
 		const UStaticMesh* M = C->GetStaticMesh();
 		const UInstancedStaticMeshComponent* I = Cast<UInstancedStaticMeshComponent>(C);
 		const AActor* O = C->GetOwner();
+		// -1 = unknown: the Nanite build setting is editor-only data, as the hash kind below is (ruling 13374 point 3).
+#if WITH_EDITORONLY_DATA
+		const int32 NaniteOn = M && M->IsNaniteEnabled() ? 1 : 0;
+#else
+		const int32 NaniteOn = -1;
+#endif
 		return FString::Printf(
 			TEXT("%s %s/%s inst %d mesh %s (LODs %d, nanite %d) forced %d minLOD %d gpuLod %d cull %d..%d LD %.0f cached %.0f minDraw %.0f hlodRelevant %d box z %.2f..%.2f, %.1f m from the tile's capture, %.1f m from the ref's"),
 			*C->GetClass()->GetName(), O ? *O->GetName() : TEXT("-"), *C->GetName(), Cd.Inst, M ? *M->GetName() : TEXT("-"),
-			M ? M->GetNumLODs() : 0, M && M->IsNaniteEnabled() ? 1 : 0, C->ForcedLodModel, C->MinLOD, I ? int32(I->bUseGpuLodSelection) : -1,
+			M ? M->GetNumLODs() : 0, NaniteOn, C->ForcedLodModel, C->MinLOD, I ? int32(I->bUseGpuLodSelection) : -1,
 			I ? I->InstanceStartCullDistance : -1, I ? I->InstanceEndCullDistance : -1, C->LDMaxDrawDistance, C->CachedMaxDrawDistance,
 			C->MinDrawDistance, O && O->IsHLODRelevant() ? 1 : 0, Cd.Box.Min.Z * 0.01, Cd.Box.Max.Z * 0.01,
 			TileO.Z > -1e6 ? FMath::Sqrt(Cd.Box.ComputeSquaredDistanceToPoint(TileO)) * 0.01 : -1.0, RefO.Z > -1e6 ? FMath::Sqrt(Cd.Box.ComputeSquaredDistanceToPoint(RefO)) * 0.01 : -1.0);

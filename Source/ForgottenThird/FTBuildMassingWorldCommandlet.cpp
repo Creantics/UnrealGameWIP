@@ -52,6 +52,7 @@
 #include "LandscapeEdit.h"
 #include "LandscapeInfo.h"
 #include "LandscapeProxy.h"
+#include "LandscapeComponent.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInterface.h"
 #include "MeshDescription.h"
@@ -3656,6 +3657,7 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 		Text.ParseIntoArrayLines(Lines);
 		int32 Placed = 0;
 		TArray<int32> Col;
+		FBox WalkBounds(ForceInit); // the walk pieces' bounds, cm, for the LOD0 block below
 		for (const FString& Raw : Lines)
 		{
 			const FString Line = Raw.TrimStartAndEnd();
@@ -3671,11 +3673,12 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			}
 			if (Col.IsEmpty())
 			{
-				for (const TCHAR* Name : {TEXT("asset"), TEXT("x"), TEXT("y"), TEXT("z"), TEXT("turn"), TEXT("kind")})
+				for (const TCHAR* Name : {TEXT("asset"), TEXT("x"), TEXT("y"), TEXT("z"), TEXT("turn"), TEXT("kind"), TEXT("sx"), TEXT("sy"), TEXT("sz"),
+						 TEXT("mat")})
 				{
 					Col.Add(F.IndexOfByKey(Name));
 				}
-				if (Col.Contains(INDEX_NONE))
+				if (MakeArrayView(Col).Left(6).Contains(INDEX_NONE)) // sx, sy, sz and mat are optional (scale 1, the mesh's own)
 				{
 					UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s needs the columns asset, x, y, z, turn, kind."), *PiecesFile);
 					World->DestroyWorld(false);
@@ -3684,15 +3687,29 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 				continue;
 			}
 			const auto Get = [&](int32 C) { return F.IsValidIndex(Col[C]) ? F[Col[C]] : FString(); };
-			double X = 0.0, Y = 0.0, Z = 0.0, Turn = 0.0;
+			double X = 0.0, Y = 0.0, Z = 0.0, Turn = 0.0, S[3] = {1.0, 1.0, 1.0};
 			const FString ZText = Get(3), Kind = Get(5);
 			UStaticMesh* const Mesh = LoadMesh(Get(0));
 			const bool bNumbers = LexTryParseString(X, *Get(1)) && LexTryParseString(Y, *Get(2)) && (ZText.IsEmpty() || LexTryParseString(Z, *ZText)) &&
 				(Get(4).IsEmpty() || LexTryParseString(Turn, *Get(4)));
-			if (!Mesh || !bNumbers || !(Kind == TEXT("solid") || Kind == TEXT("walk") || Kind == TEXT("none")))
+			bool bScale = true;
+			for (int32 K = 0; K < 3; ++K)
+			{
+				const FString St = Get(6 + K);
+				bScale &= St.IsEmpty() || (LexTryParseString(S[K], *St) && FMath::IsFinite(S[K]) && S[K] > 0.0);
+			}
+			if (!Mesh || !bNumbers || !bScale || !(Kind == TEXT("solid") || Kind == TEXT("walk") || Kind == TEXT("none")))
 			{
 				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: a piece needs a mesh that loads, numbers and kind solid, walk or none: '%s'."),
 					*PiecesFile, *Line);
+				World->DestroyWorld(false);
+				return 1;
+			}
+			const FString MatPath = Get(9);
+			UMaterialInterface* const PieceMat = MatPath.IsEmpty() ? nullptr : LoadObject<UMaterialInterface>(nullptr, *MatPath);
+			if (!MatPath.IsEmpty() && !PieceMat)
+			{
+				UE_LOG(LogForgottenThird, Error, TEXT("FTBuildMassingWorld: %s: material '%s' does not load: '%s'."), *PiecesFile, *MatPath, *Line);
 				World->DestroyWorld(false);
 				return 1;
 			}
@@ -3704,16 +3721,56 @@ int32 UFTBuildMassingWorldCommandlet::Main(const FString& Params)
 			const TArray<FStaticMaterial>& Slots = Mesh->GetStaticMaterials();
 			for (const FStaticMaterial& Slot : Slots)
 			{
-				Mats.Add(NightGlow && GlowSlots.Contains(Slot.MaterialSlotName) ? NightGlow : nullptr);
+				Mats.Add(NightGlow && GlowSlots.Contains(Slot.MaterialSlotName) ? NightGlow : PieceMat);
 			}
 			FFTCellOptions PieceOpts;
 			PieceOpts.Cull = EFTCellCull::Prop;
 			PieceOpts.Label = FString::Printf(TEXT("PIECE-%d"), Placed + 1);
-			Cells.Add(Mesh, Mats, FTransform(FRotator(0.0, Turn, 0.0), Cm(ftcore::massingEnginePoint(Side, X, Y, Z))), {},
+			const FTransform PieceXf(FRotator(0.0, Turn, 0.0), Cm(ftcore::massingEnginePoint(Side, X, Y, Z)), FVector(S[0], S[1], S[2]));
+			if (Kind == TEXT("walk"))
+			{
+				WalkBounds += Mesh->GetBoundingBox().TransformBy(PieceXf);
+			}
+			Cells.Add(Mesh, Mats, PieceXf, {},
 				Kind == TEXT("solid") ? EFTCellKind::Solid : Kind == TEXT("walk") ? EFTCellKind::Walk : EFTCellKind::NoCollide, PieceOpts);
 			++Placed;
 		}
 		UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: pieces: %d placed from %s."), Placed, *FPaths::GetCleanFilename(PiecesFile));
+		// Walk pieces stand on LOD 0 ground with resident heights: force LOD 0 on the components under them, grown by the LOD
+		// blend band (ftcore::massingLod0Components), and keep those heightmaps from streaming (ruling 12112 point 3 (d)).
+		// ForcedLOD (ULandscapeComponent) and NeverStream (UStreamableRenderAsset) are saved properties; the heightmaps are
+		// outered to the one ALandscape (ALandscapeProxy::CreateLandscapeTexture), so the map's save below writes them.
+		if (Land && LandInfo && WalkBounds.IsValid)
+		{
+			const FBox Q = WalkBounds.InverseTransformBy(Land->GetActorTransform()); // cm to landscape quads
+			const ftcore::MassingComponentRange LodR =
+				ftcore::massingLod0Components(Q.Min.X, Q.Max.X, Q.Min.Y, Q.Max.Y, Land->ComponentSizeQuads);
+			int32 Forced = 0, Heightmaps = 0;
+			for (ULandscapeComponent* const C : Land->LandscapeComponents)
+			{
+				if (!C)
+				{
+					continue;
+				}
+				const FIntPoint K = C->GetComponentKey();
+				if (K.X < LodR.x0 || K.X > LodR.x1 || K.Y < LodR.y0 || K.Y > LodR.y1)
+				{
+					continue;
+				}
+				C->SetForcedLOD(0);
+				C->MarkRenderStateDirty();
+				if (UTexture2D* const H = C->GetHeightmap())
+				{
+					H->NeverStream = true;
+					H->UpdateResource();
+					H->MarkPackageDirty();
+					++Heightmaps;
+				}
+				++Forced;
+			}
+			UE_LOG(LogForgottenThird, Display, TEXT("FTBuildMassingWorld: LOD0: components x %d..%d, y %d..%d forced (%d), %d heightmaps NeverStream."),
+				LodR.x0, LodR.x1, LodR.y0, LodR.y1, Forced, Heightmaps);
+		}
 	}
 	// The room the dressing takes: the frontage and the props keep out of it.
 	std::vector<ftcore::MassingFoot> Taken;

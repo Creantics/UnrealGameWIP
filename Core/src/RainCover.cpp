@@ -415,6 +415,7 @@ void rainCoverHeaderWrite(const RainCoverTileHeader& h, unsigned char* out) {
     putF32(out + 24, h.topZ);
     putF32(out + 28, h.minZ);
     putF32(out + 32, h.maxZ);
+    putF32(out + 36, h.farM);  // bytes 36..39 were zero in every v2 file before 12825
     putU32(out + 40, static_cast<unsigned>(h.key & 0xffffffffull));
     putU32(out + 44, static_cast<unsigned>(h.key >> 32));
 }
@@ -431,6 +432,7 @@ bool rainCoverHeaderRead(const unsigned char* in, int size, RainCoverTileHeader&
     h.topZ = getF32(in + 24);
     h.minZ = getF32(in + 28);
     h.maxZ = getF32(in + 32);
+    h.farM = getF32(in + 36);
     h.key = static_cast<unsigned long long>(getU32(in + 40)) | (static_cast<unsigned long long>(getU32(in + 44)) << 32);
     return true;
 }

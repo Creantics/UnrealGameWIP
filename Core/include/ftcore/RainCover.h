@@ -24,6 +24,9 @@
 
 #include "ftcore/Api.h"
 
+#include <bit>
+#include <cstdint>
+#include <limits>
 #include <string>
 
 namespace ftcore {
@@ -109,9 +112,11 @@ FTCORE_API int rainCoverRingEntered(RainCoverTile from, RainCoverTile to, RainCo
 
 // A tile stored as 16-bit codes over its own height range. Code 0 is no occluder (the capture's far plane); codes
 // 1..65535 run evenly from minZ to maxZ, rounded to the nearest, so a height is off by at most range / (2 * 65534):
-// 2 mm up to a range of about 262 m. A range of 0 keeps every occluder at code 1.
+// 2.5 mm up to a range of about 327 m (ruling 12825). A range of 0 keeps every occluder at code 1.
 inline constexpr unsigned kRainCoverR16None = 0u;
 inline constexpr unsigned kRainCoverR16Top = 65535u;
+// The ring's height tolerance (m), one constant for the pack and the witness: a pack past it refuses the tile (12825).
+inline constexpr float kRainCoverRingTolM = 0.0025f;
 struct RainCoverR16Range {
     float minZ = 0.f, maxZ = 0.f;
     int hits = 0;  // texels with an occluder
@@ -119,7 +124,8 @@ struct RainCoverR16Range {
 // The worst height error (m) of a range of rangeM; 0 for none or a non-finite range.
 FTCORE_API float rainCoverR16Error(float rangeM);
 // Packs `count` captured depths (m below topZ; at or past farM, or not finite, is no occluder) into out (count codes,
-// the caller's buffer) and sets range. Returns whether the worst error is within toleranceM (2 mm in the probe).
+// the caller's buffer) and sets range. Returns whether the worst error is within toleranceM (the ring passes
+// kRainCoverRingTolM).
 FTCORE_API bool rainCoverR16Pack(const float* depthM, int count, float topZ, float farM, unsigned short* out,
                                  RainCoverR16Range& range, float toleranceM);
 // A code back to an occluder Z (m); false for no occluder.
@@ -172,6 +178,7 @@ struct RainCoverTileHeader {
     int res = 0;      // payload side (0: header only)
     int hits = 0;     // texels with an occluder
     float topZ = 0.f, minZ = 0.f, maxZ = 0.f;  // m
+    float farM = 0.f;  // the depth draw's reach below topZ (m); 0 in a file from before 12825: read as the spec's depthM
     unsigned long long key = 0;  // the content key the tile was baked from
     RainCoverR16Range range() const { return RainCoverR16Range{minZ, maxZ, hits}; }
 };
@@ -189,5 +196,71 @@ FTCORE_API void rainCoverTileFill(const RainCoverTileHeader& h, int res, unsigne
 // The strip's tile list (Data/Look/rain_cover_tiles.txt): "t tx ty" lines, '#' comments. Parses one line; false for any
 // other line.
 FTCORE_API bool rainCoverTileLine(const char* line, RainCoverTile& tile);
+
+// The Nanite raster setting a tile is baked under (r.Nanite.MaxPixelsPerEdge). It is one of the bake's sealed settings,
+// so a cache baked before it was sealed reads stale.
+inline constexpr float kRainCoverBakeMaxPixelsPerEdge = 0.04f;
+// Whether a run may bake (or witness) tiles: never in Shipping, and only with the live r.Nanite.MaxPixelsPerEdge equal to
+// kRainCoverBakeMaxPixelsPerEdge within 1e-6 (a NaN never matches). A refused tile is baked and written nowhere.
+constexpr bool rainCoverMayBake(bool shipping, float maxPixelsPerEdge) noexcept
+{
+    const float d = maxPixelsPerEdge - kRainCoverBakeMaxPixelsPerEdge;
+    return !shipping && d <= 1e-6f && d >= -1e-6f;
+}
+
+// A baked tile's top (m). With no bounds over the find's max, the top is the find's max + marginM, unclamped.
+// A top raised by bounds leaves the lowest hit at least one margin inside the depth draw: topZ <= cap, where
+// cap = minZ + depthM - marginM. Bounds raise the top to bounds + marginM while that is within the cap; past it, the top
+// is the cap (raised and clamped). Where the find's own max + marginM already reaches the cap (the find spans deeper than
+// depthM allows), the top stays the find's max + marginM: not raised, flagged clamped. A depthM draw from it then holds
+// the lowest hit by cap - maxZ: one margin at the cap, less above it, on the draw's far edge at cap + marginM, and
+// outside past that.
+struct RainCoverTop {
+    double topZ;
+    bool raisedByBounds;
+    bool clampedByDepth;
+};
+constexpr RainCoverTop rainCoverTopClamp(double maxZ, bool hasBounds, double bounds, double minZ, double depthM,
+                                         double marginM) noexcept
+{
+    if (!hasBounds || bounds <= maxZ) return {maxZ + marginM, false, false};
+    const double cap = minZ + depthM - marginM;
+    if (bounds + marginM <= cap) return {bounds + marginM, true, false};
+    if (maxZ + marginM < cap) return {cap, true, true};
+    return {maxZ + marginM, false, true};
+}
+
+// A tile's depth reach (ruling 12825 point 9): the spec's depthM, or, when the tile's top stands more than depthM over
+// its lowest find hit, down to that hit minus the margin, so the draw reaches the tile's lowest ground.
+constexpr double rainCoverTileFar(double topZ, double findMinZ, double depthM, double marginM) noexcept
+{
+    const double need = topZ - (findMinZ - marginM);
+    return need > depthM ? need : depthM;
+}
+// The next float up from a finite f (std::nextafter is constexpr only from C++23).
+constexpr float rainCoverNextUp(float f) noexcept
+{
+    if (f == 0.f) return std::bit_cast<float>(std::uint32_t{1});
+    const std::uint32_t b = std::bit_cast<std::uint32_t>(f);
+    return std::bit_cast<float>(f > 0.f ? b + 1u : b - 1u);
+}
+// A baked tile's draw far as the ring holds it, a float (ruling 17662): the top raised by bounds, rainCoverTileFar from
+// it cast to float, then stepped up one float at a time while rainCoverTopClamp, run with that float as its depth, still
+// clamps. The clamp's own cap is tested on the float the ring passes, so by construction the clamp run with the result
+// does not bind; the cast rounds to nearest, so it takes one step at most. Steps stop at 4, or at a non-finite reach (the
+// clamp, run with it, stays the guard and flags it). A NaN minZ gives depthM, stepped 4 times.
+constexpr float rainCoverBakeFar(double maxZ, bool hasBounds, double bounds, double minZ, double depthM,
+                                 double marginM) noexcept
+{
+    const double raised = rainCoverTopClamp(maxZ, hasBounds, bounds, minZ, 1.0e9, marginM).topZ;
+    float reach = static_cast<float>(rainCoverTileFar(raised, minZ, depthM, marginM));
+    for (int i = 0; i < 4 && reach <= (std::numeric_limits<float>::max)() &&
+                    rainCoverTopClamp(maxZ, hasBounds, bounds, minZ, reach, marginM).clampedByDepth;
+         ++i)
+        reach = rainCoverNextUp(reach);
+    return reach;
+}
+// A baked tile's floor reach: its header's farM, or the spec's depthM for a header without one (0).
+constexpr float rainCoverHeaderFar(float farM, float depthM) noexcept { return farM > 0.f ? farM : depthM; }
 
 }  // namespace ftcore

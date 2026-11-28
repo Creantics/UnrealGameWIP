@@ -214,6 +214,9 @@ TEST_CASE("rainCover R16 (3b): none is its own code, heights within half a step"
     CHECK(rainCoverR16Error(200.f) == doctest::Approx(200.f / 131068.f));
     CHECK(rainCoverR16Error(200.f) < 0.002f);   // a 200 m range is inside 2 mm
     CHECK(rainCoverR16Error(263.f) > 0.002f);   // ... 263 m is not
+    CHECK(kRainCoverRingTolM == 0.0025f);       // the ring's tolerance (ruling 12825)
+    CHECK(rainCoverR16Error(327.f) <= kRainCoverRingTolM);  // 2.5 mm holds to about 327 m
+    CHECK(rainCoverR16Error(328.f) > kRainCoverRingTolM);
     CHECK(rainCoverR16Error(std::numeric_limits<float>::quiet_NaN()) == 0.f);
 
     // depths below a top at 250 m; far 200 m: 200 and more, or not finite, is no occluder
@@ -259,6 +262,103 @@ TEST_CASE("rainCover R16 (3b): none is its own code, heights within half a step"
     CHECK_FALSE(rainCoverR16Pack(depth, 8, std::numeric_limits<float>::quiet_NaN(), far, code, r, 0.002f));
     CHECK(code[0] == kRainCoverR16None);
     CHECK_FALSE(rainCoverR16Pack(nullptr, 8, 0.f, far, code, r, 0.002f));
+}
+
+TEST_CASE("rainCover R16 (12825): the ring's 2.5 mm, at (3,-1)'s 281.45 m span and at 400 m") {
+    // A sample half a step over the range's floor decodes a half step off, the worst error of that range.
+    const auto halfStepError = [](float topZ, float spanM, float farM, bool& packed) {
+        const float lo = topZ - 1.f - spanM;
+        const float half = lo + 0.5f * spanM / static_cast<float>(kRainCoverR16Top - 1u);
+        const float depth[3] = {1.f, topZ - lo, topZ - half};
+        unsigned short code[3] = {};
+        RainCoverR16Range r;
+        packed = rainCoverR16Pack(depth, 3, topZ, farM, code, r, kRainCoverRingTolM);
+        float z = 0.f;
+        REQUIRE(rainCoverR16Unpack(code[2], r, z));
+        return std::fabs(z - (topZ - depth[2]));
+    };
+    bool packed = false;
+    const float e281 = halfStepError(290.578f, 281.45f, 283.445f, packed);
+    CHECK(packed);  // (3,-1): 2.147 mm, inside 2.5 mm
+    CHECK(e281 <= kRainCoverRingTolM);
+    CHECK(e281 == doctest::Approx(281.45f / 131068.f).epsilon(0.05));
+    const float e400 = halfStepError(401.f, 400.f, 402.f, packed);
+    CHECK_FALSE(packed);  // 3.05 mm: the ring refuses the tile
+    CHECK(e400 > kRainCoverRingTolM);
+}
+
+TEST_CASE("rainCoverTileFar and rainCoverHeaderFar (12825)") {
+    CHECK(rainCoverTileFar(290.578, 8.133, 200.0, 1.0) == doctest::Approx(283.445));  // (3,-1)
+    CHECK(rainCoverTileFar(120.0, 10.0, 200.0, 1.0) == 200.0);                         // within depthM: depthM
+    CHECK(rainCoverHeaderFar(283.445f, 200.f) == 283.445f);
+    CHECK(rainCoverHeaderFar(0.f, 200.f) == 200.f);  // a header from before 12825
+    // The clamp run with that far never binds for (3,-1): the top is the bounds' raise.
+    const double raised = rainCoverTopClamp(289.58, true, 289.578, 8.133, 1.0e9, 1.0).topZ;
+    CHECK(raised == doctest::Approx(290.578));
+    const double far = rainCoverTileFar(raised, 8.133, 200.0, 1.0);
+    const RainCoverTop t = rainCoverTopClamp(289.58, true, 289.578, 8.133, far, 1.0);
+    CHECK(t.topZ == doctest::Approx(raised));
+    CHECK_FALSE(t.clampedByDepth);
+}
+
+TEST_CASE("rainCoverBakeFar (17662)") {
+    // The ring's sequence (FTRainCoverRing.cpp :1376-1377): float find values, the far from rainCoverBakeFar, then the clamp
+    // run with it. need is rainCoverTileFar from the raised top; each case asserts its cast direction and step count.
+    struct R { double need; float cast; float reach; RainCoverTop top; };
+    const auto ring = [](float maxZ, float bt, float minZ) {
+        const double raised = rainCoverTopClamp(maxZ, true, bt, minZ, 1.0e9, 1.0).topZ;
+        const double need = rainCoverTileFar(raised, minZ, 200.f, 1.0);
+        const float reach = rainCoverBakeFar(maxZ, true, bt, minZ, 200.f, 1.0);
+        return R{need, static_cast<float>(need), reach, rainCoverTopClamp(maxZ, true, bt, minZ, reach, 1.0)};
+    };
+    // The report's case: the cast rounds down, one step; raised, not clamped.
+    R r = ring(289.5780f, 289.57825f, 8.13277f);
+    CHECK(double(r.cast) < r.need);
+    CHECK(r.reach == rainCoverNextUp(r.cast));
+    static_assert(rainCoverBakeFar(289.5780f, true, 289.57825f, 8.13277f, 200.f, 1.0) ==
+                  rainCoverNextUp(static_cast<float>(rainCoverTileFar(
+                      rainCoverTopClamp(289.5780f, true, 289.57825f, 8.13277f, 1.0e9, 1.0).topZ, 8.13277f, 200.f, 1.0))));
+    CHECK(r.top.raisedByBounds);
+    CHECK_FALSE(r.top.clampedByDepth);
+    CHECK(r.top.topZ == double(289.57825f) + 1.0);
+    CHECK(static_cast<float>(r.top.topZ) == 290.5782471f);
+    // A cast that is exact: no step.
+    r = ring(319.0968933f, 320.0968933f, 76.2986145f);
+    CHECK(double(r.cast) == r.need);
+    CHECK(r.reach == r.cast);
+    CHECK_FALSE(r.top.clampedByDepth);
+    // A cast that rounds up: no step.
+    r = ring(341.1799316f, 342.1799316f, 63.9937515f);
+    CHECK(double(r.cast) > r.need);
+    CHECK(r.reach == r.cast);
+    CHECK_FALSE(r.top.clampedByDepth);
+    // A cast that rounds down: one step.
+    r = ring(286.1961670f, 287.1961670f, 5.2014341f);
+    CHECK(double(r.cast) < r.need);
+    CHECK(r.reach == rainCoverNextUp(r.cast));
+    CHECK(r.top.raisedByBounds);
+    CHECK_FALSE(r.top.clampedByDepth);
+    CHECK(r.top.topZ == double(287.1961670f) + 1.0);
+    // need just over depthM: the cast lands on depthM itself; the step makes the ring count the tile deep (FarT > depthM).
+    r = ring(205.f, 206.f, 7.9999995f);
+    CHECK(r.need > 200.0);
+    CHECK(r.cast == 200.f);
+    CHECK(r.reach == rainCoverNextUp(200.f));
+    CHECK(r.reach > 200.f);
+    CHECK_FALSE(r.top.clampedByDepth);
+    // Unraised (no bounds, or bounds under the find's max): the plain cast, no step.
+    CHECK(rainCoverBakeFar(120.f, false, 0.0, 10.f, 200.f, 1.0) == 200.f);
+    CHECK(rainCoverBakeFar(289.58f, true, 289.0, 8.133f, 200.f, 1.0) ==
+          static_cast<float>(rainCoverTileFar(double(289.58f) + 1.0, 8.133f, 200.f, 1.0)));
+    // A NaN minZ: rainCoverTileFar gives depthM, the clamp keeps flagging, and the steps stop at 4.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(rainCoverBakeFar(290.f, true, 300.0, nan, 200.f, 1.0) ==
+          rainCoverNextUp(rainCoverNextUp(rainCoverNextUp(rainCoverNextUp(200.f)))));
+    // rainCoverNextUp.
+    CHECK(rainCoverNextUp(1.f) == 1.00000012f);
+    CHECK(rainCoverNextUp(0.f) == std::numeric_limits<float>::denorm_min());
+    CHECK(rainCoverNextUp(-1.f) == -0.99999994f);
+    static_assert(rainCoverBakeFar(120.f, false, 0.0, 10.f, 200.f, 1.0) == 200.f);
 }
 
 namespace {
@@ -398,8 +498,16 @@ TEST_CASE("rainCover tile file v2: a 4096-byte header, payload sector-aligned") 
     CHECK(r.topZ == 412.5f);
     CHECK(r.minZ == -3.25f);
     CHECK(r.maxZ == 88.f);
+    CHECK(r.farM == 0.f);  // a v2 header from before 12825: bytes 36..39 zero
     CHECK(r.key == h.key);
     CHECK(rainCoverPayloadBytes(r) == 524288);
+    h.farM = 283.445f;  // 12825: the tile's far round-trips
+    rainCoverHeaderWrite(h, buf.data());
+    REQUIRE(rainCoverHeaderRead(buf.data(), kRainCoverFileHeader, r));
+    CHECK(r.farM == 283.445f);
+    CHECK(r.key == h.key);
+    h.farM = 0.f;
+    rainCoverHeaderWrite(h, buf.data());
     CHECK(kRainCoverFileHeader % 4096 == 0);
     CHECK_FALSE(rainCoverHeaderRead(buf.data(), kRainCoverFileHeader - 1, r));
     buf[3] = '1';
@@ -438,4 +546,66 @@ TEST_CASE("rainCover tile list lines") {
     CHECK_FALSE(rainCoverTileLine("t 1 2 3", t));
     CHECK_FALSE(rainCoverTileLine("", t));
     CHECK_FALSE(rainCoverTileLine(nullptr, t));
+}
+
+TEST_CASE("rainCoverMayBake: only outside Shipping, with the sealed MaxPixelsPerEdge") {
+    static_assert(kRainCoverBakeMaxPixelsPerEdge == 0.04f);
+    CHECK(rainCoverMayBake(false, 0.04f));
+    CHECK(rainCoverMayBake(false, kRainCoverBakeMaxPixelsPerEdge + 0.5e-6f));
+    CHECK_FALSE(rainCoverMayBake(true, 0.04f));      // Shipping never bakes
+    CHECK_FALSE(rainCoverMayBake(false, 1.f));       // the engine's default
+    CHECK_FALSE(rainCoverMayBake(false, 0.0401f));
+    CHECK_FALSE(rainCoverMayBake(false, 0.0399f));
+    CHECK_FALSE(rainCoverMayBake(false, -1.f));      // the cvar not found
+    CHECK_FALSE(rainCoverMayBake(false, std::numeric_limits<float>::quiet_NaN()));
+}
+
+TEST_CASE("rainCoverTopClamp") {
+    auto t = rainCoverTopClamp(120.0, true, 130.0, 0.0, 200.0, 1.0);
+    CHECK(t.topZ == doctest::Approx(131.0));
+    CHECK(t.raisedByBounds);
+    CHECK_FALSE(t.clampedByDepth);
+    t = rainCoverTopClamp(120.0, true, 250.0, 10.0, 200.0, 1.0);  // ruling 17088: the cap, 209 (was 210)
+    CHECK(t.topZ == 209.0);
+    CHECK(t.raisedByBounds);
+    CHECK(t.clampedByDepth);
+    CHECK(t.topZ - 10.0 <= 200.0 - 1.0);
+    // Ruling 17088 pt 3: minZ 10, depth 200, margin 1, so the cap is 209. The bounds branch, at the cap and either side.
+    t = rainCoverTopClamp(120.0, true, 207.5, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == 208.5);
+    CHECK(t.raisedByBounds);
+    CHECK_FALSE(t.clampedByDepth);
+    t = rainCoverTopClamp(120.0, true, 208.0, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == 209.0);
+    CHECK(t.raisedByBounds);
+    CHECK_FALSE(t.clampedByDepth);
+    t = rainCoverTopClamp(120.0, true, 208.5, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == 209.0);
+    CHECK(t.raisedByBounds);
+    CHECK(t.clampedByDepth);
+    // The clamped branch: the find's own max + margin under, at and over the cap.
+    t = rainCoverTopClamp(207.5, true, 250.0, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == 209.0);
+    CHECK(t.raisedByBounds);
+    CHECK(t.clampedByDepth);
+    CHECK(t.topZ - 10.0 <= 200.0 - 1.0);
+    t = rainCoverTopClamp(208.0, true, 250.0, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == 209.0);
+    CHECK_FALSE(t.raisedByBounds);
+    CHECK(t.clampedByDepth);
+    t = rainCoverTopClamp(208.5, true, 250.0, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == 209.5);
+    CHECK_FALSE(t.raisedByBounds);
+    CHECK(t.clampedByDepth);
+    t = rainCoverTopClamp(290.0, true, 300.0, 10.0, 200.0, 1.0);
+    CHECK(t.topZ == doctest::Approx(291.0));
+    CHECK_FALSE(t.raisedByBounds);
+    CHECK(t.clampedByDepth);
+    t = rainCoverTopClamp(120.0, false, 0.0, 0.0, 200.0, 1.0);
+    CHECK(t.topZ == doctest::Approx(121.0));
+    CHECK_FALSE(t.raisedByBounds);
+    CHECK_FALSE(t.clampedByDepth);
+    t = rainCoverTopClamp(289.58, true, 289.58, 8.13, 200.0, 1.0);  // tile (3,-1) as read
+    CHECK(t.topZ == doctest::Approx(290.58));
+    CHECK_FALSE(t.clampedByDepth);
 }

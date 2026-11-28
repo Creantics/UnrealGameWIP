@@ -364,4 +364,21 @@ inline constexpr double kMassingRoadFeather = 2.0; // m: what the ground master 
 FTCORE_API void massingRoadMask(const std::vector<MassingStreet>& streets, std::size_t size, double sideM, double feather,
                                 std::uint8_t* out);
 
+// Landscape components to force to LOD 0 so no walk point lies in the LOD blend band of an unforced neighbour: the walk
+// points' bounding box in landscape quads (qx0..qx1, qy0..qy1), grown by the band (LODBlendRange 0.1 x a 63-quad
+// subsection = 6.3 quads), as component indices (floor of quads / componentQuads), inclusive.
+struct MassingComponentRange {
+    int x0, x1, y0, y1;
+};
+constexpr MassingComponentRange massingLod0Components(double qx0, double qx1, double qy0, double qy1, int componentQuads = 126,
+                                                      double bandQuads = 6.3) noexcept
+{
+    const auto cell = [componentQuads](double q) {
+        const double c = q / componentQuads;
+        const int i = static_cast<int>(c);
+        return (c < static_cast<double>(i)) ? i - 1 : i;
+    };
+    return {cell(qx0 - bandQuads), cell(qx1 + bandQuads), cell(qy0 - bandQuads), cell(qy1 + bandQuads)};
+}
+
 } // namespace ftcore

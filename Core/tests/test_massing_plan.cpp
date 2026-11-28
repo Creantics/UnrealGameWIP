@@ -1293,3 +1293,26 @@ TEST_CASE("massing road mask: an empty table, a bad size or a bad feather leaves
     for (const std::uint8_t b : mask) CHECK(b == 0);
     massingRoadMask({s}, 0, 16.0, kMassingRoadFeather, mask.data()); // no size: nothing written, nothing read
 }
+
+TEST_CASE("massingLod0Components: stair TQ-19's walk points give components x 11..12, y 13..14") {
+    const auto r = massingLod0Components(1508.38, 1625.69, 1744.94, 1781.06);
+    CHECK(r.x0 == 11);
+    CHECK(r.x1 == 12);
+    CHECK(r.y0 == 13);
+    CHECK(r.y1 == 14);
+}
+
+TEST_CASE("massingLod0Components: a box mid-component stays one component; within the band takes the neighbour") {
+    auto r = massingLod0Components(140.0, 200.0, 140.0, 200.0);
+    CHECK(r.x0 == 1);
+    CHECK(r.x1 == 1);
+    CHECK(r.y0 == 1);
+    CHECK(r.y1 == 1);
+    r = massingLod0Components(140.0, 246.0, 140.0, 200.0);  // 246 + 6.3 >= 252
+    CHECK(r.x1 == 2);
+    r = massingLod0Components(132.0, 200.0, 140.0, 200.0);  // 132 - 6.3 < 126
+    CHECK(r.x0 == 0);
+    r = massingLod0Components(2.0, 10.0, 2.0, 10.0);        // below the origin: floor, not truncation
+    CHECK(r.x0 == -1);
+    CHECK(r.y0 == -1);
+}

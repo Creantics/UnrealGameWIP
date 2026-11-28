@@ -82,12 +82,20 @@ namespace FTRainRingDetail
 constexpr float kRingFindTopM = 400.f; // over the strip's highest box (242 m)
 constexpr float kRingFindFarM = 500.f; // ... down to -100 m
 constexpr float kRingMarginM = 1.f;    // a tile's top over its highest occluder
-constexpr float kRingTolM = 0.002f;    // the ruled height tolerance
+constexpr float kRingTolM = ftcore::kRainCoverRingTolM; // the ruled height tolerance (2.5 mm, ruling 12825)
 constexpr int32 kRingBakePerTick = 32;
 constexpr int32 kRingSwitchSettle = 60; // ticks after the bake switches go on
 constexpr double kRingShaderWaitS = 1200.0; // the most the bake waits for shader compiles
 constexpr int32 kRingPool = 25;         // 5 x 5 round the lead's tile
 constexpr int32 kRingAlign = 4096;      // unbuffered reads: offset, size and buffer sector-aligned
+
+// The live r.Nanite.MaxPixelsPerEdge, which the bake's and the witness's Nanite raster runs at; -1 when the cvar is not
+// found (refused by ftcore::rainCoverMayBake).
+float RingPixelsPerEdge()
+{
+	const IConsoleVariable* const V = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.MaxPixelsPerEdge"));
+	return V ? V->GetFloat() : -1.f;
+}
 
 int32 RingCVarInt(const TCHAR* Name, int32 Fallback)
 {
@@ -138,11 +146,14 @@ struct FFTRainRing
 		int32 Forced = 0, IStart = 0, IEnd = 0;
 		bool bIsm = false, bWpo = false;
 	};
+#if !UE_BUILD_SHIPPING
+	// Dev only, as its includes and every use are (ruling 13200 point 3).
 	struct FLandSaved
 	{
 		TWeakObjectPtr<ULandscapeComponent> Comp;
 		int32 Forced = -1;
 	};
+#endif
 	struct FEntry
 	{
 		int32 Ti = -1; // tile index held (or being read); -1 free
@@ -162,6 +173,9 @@ struct FFTRainRing
 	TArray<uint8> Have; // 1: the cache's file is there and its key matches
 	TSet<int32> Plant;  // tiles a material with a world-position offset touches
 	TArray<int32> ToBake;
+	TMap<FIntPoint, float> BoundsTop; // per tile: the top (m) of the highest box the key buckets into it (the clamp's bounds)
+	int32 Raised = 0, Clamped = 0;    // tiles whose top the clamp raised to their bounds, and capped by the depth draw
+	int32 Deep = 0, PackRefused = 0;  // tiles drawn past depthM (the per-tile far), and refused by the pack's tolerance
 	FString Dir, CompareDir;
 	int32 Comps = 0, Insts = 0, Keyed = 0;
 
@@ -264,7 +278,9 @@ struct FFTRainRing
 	// -RainCoverLandscapeFull (dev, off by default): while the switches are on, every landscape component at ForcedLOD 0 with
 	// its heightmap held fully resident, for the bake and the witness alike. Bake it into a fresh dir: the key leaves it out.
 	bool bLandFull = false;
+#if !UE_BUILD_SHIPPING
 	TArray<FLandSaved> LandSaved;
+#endif
 	// -RainCoverWitnessDump=<dir>: per square, the witness, post and pre heights as raw float32 (NaN: no hit), for a
 	// texel-for-texel compare of two witness runs.
 	FString WitnessDump;
@@ -534,6 +550,7 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 	TMap<FIntPoint, uint64> Sum;
 	R.Comps = R.Insts = 0;
 	R.Plant.Reset();
+	R.BoundsTop.Reset();
 	const auto Bucket = [&](const FBox& Bx, uint64 H, bool bWpo)
 	{
 		const ftcore::RainCoverTile A = ftcore::rainCoverTileAt(Spec, float(Bx.Min.X) * 0.01f, float(Bx.Min.Y) * 0.01f);
@@ -543,6 +560,15 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 			for (int32 Y = A.y; Y <= Z.y && Y - A.y < 64; ++Y)
 			{
 				Sum.FindOrAdd(FIntPoint(X, Y)) += H;
+				const float Top = float(Bx.Max.Z) * 0.01f;
+				if (float* const Bt = R.BoundsTop.Find(FIntPoint(X, Y)))
+				{
+					*Bt = FMath::Max(*Bt, Top);
+				}
+				else
+				{
+					R.BoundsTop.Add(FIntPoint(X, Y), Top);
+				}
 				if (bWpo)
 				{
 					const int32* Ti = R.Index.Find(FIntPoint(X, Y));
@@ -741,9 +767,10 @@ void RingKeyTiles(UWorld& World, const ftcore::RainCoverSpec& Spec, FFTRainRing&
 			Census[0][0] + Census[0][1] + Census[1][0] + Census[1][1], Census[0][0] + Census[1][0], Census[0][1] + Census[1][1], Census[0][0],
 			Census[0][1], Census[1][0], Census[1][1], By.IsEmpty() ? TEXT("none") : *By);
 	}
-	// The bake's own settings: file version, the spec, the find and margin, LOD0, no cull and the wind frozen.
-	const float Settings[11] = {float(ftcore::kRainCoverFileVersion), Spec.sizeM, float(Spec.resolution), Spec.depthM, kRingFindTopM, kRingFindFarM,
-		kRingMarginM, kRingTolM, 1.f /*LOD0*/, 1.f /*no cull*/, 1.f /*WPO off*/};
+	// The bake's own settings: file version, the spec, the find and margin, LOD0, no cull, the wind frozen and the Nanite
+	// raster's MaxPixelsPerEdge (ruling 12583: every cache baked before it reads stale), and the per-tile far (12825).
+	const float Settings[13] = {float(ftcore::kRainCoverFileVersion), Spec.sizeM, float(Spec.resolution), Spec.depthM, kRingFindTopM, kRingFindFarM,
+		kRingMarginM, kRingTolM, 1.f /*LOD0*/, 1.f /*no cull*/, 1.f /*WPO off*/, ftcore::kRainCoverBakeMaxPixelsPerEdge, 1.f /*per-tile far*/};
 	const uint64 Seal = CityHash64(reinterpret_cast<const char*>(Settings), uint32(sizeof(Settings)));
 	R.Keyed = 0;
 	for (int32 Ti = 0; Ti < R.Tiles.Num(); ++Ti)
@@ -1024,7 +1051,7 @@ void RingGroundCount(UWorld& World, const FFTRainRing& R, const ftcore::RainCove
 				// through, three times at most.
 				FHitResult Hit;
 				double Start = (Tz - Spec.biasM - 0.02f) * 100.0;
-				const double End = (Tz - Spec.depthM) * 100.0;
+				const double End = (Tz - ftcore::rainCoverHeaderFar(H.farM, Spec.depthM)) * 100.0;
 				bool bHit = false;
 				for (int32 K = 0; K < 4 && Start > End; ++K)
 				{
@@ -1063,7 +1090,9 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 	const auto SetSlot = [&](int32 S, int32 Ti)
 	{
 		R.SlotTi[S] = Ti;
-		const ftcore::RainCoverSlot V = Ti >= 0 ? ftcore::rainCoverSlotFor(R.Tiles[Ti], R.Head[Ti].range()) : ftcore::RainCoverSlot{};
+		// A tile whose header has no hits takes the open slot vector, so its slot reads open whatever codes its atlas block
+		// still holds.
+		const ftcore::RainCoverSlot V = Ti >= 0 && R.Head[Ti].hits > 0 ? ftcore::rainCoverSlotFor(R.Tiles[Ti], R.Head[Ti].range()) : ftcore::RainCoverSlot{};
 		if (P)
 		{
 			P->SetVectorParameterValue(R.SlotName[S], FLinearColor(V.tx, V.ty, V.minZcm, V.maxZcm));
@@ -1205,7 +1234,11 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 		const double K0 = FPlatformTime::Seconds();
 		RingKeyTiles(World, Spec, R);
 		const double KeyMs = (FPlatformTime::Seconds() - K0) * 1000.0;
-		int32 Match = 0, Stale = 0, Missing = 0;
+		// Ruling 12583 point 2 (interim guard): a tile is baked only outside Shipping and under the sealed Nanite raster
+		// setting. A refused tile is baked and written nowhere and stays open: its stale header is dropped (no hits).
+		const float Ppe = RingPixelsPerEdge();
+		const bool bMayBake = ftcore::rainCoverMayBake(UE_BUILD_SHIPPING != 0, Ppe);
+		int32 Match = 0, Stale = 0, Missing = 0, Refused = 0;
 		for (int32 Ti = 0; Ti < NT; ++Ti)
 		{
 			ftcore::RainCoverTileHeader H;
@@ -1226,7 +1259,15 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 			}
 			if (R.bRebake || !R.Have[Ti])
 			{
-				R.ToBake.Add(Ti);
+				if (bMayBake)
+				{
+					R.ToBake.Add(Ti);
+				}
+				else if (!R.Have[Ti])
+				{
+					R.Head[Ti] = ftcore::RainCoverTileHeader{};
+					++Refused;
+				}
 			}
 		}
 		UE_LOG(LogForgottenThird, Display,
@@ -1242,6 +1283,23 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 			R.bWitness = false;
 		}
 #endif
+		if (!bMayBake && (Refused > 0 || R.bRebake))
+		{
+			// Under -RainCoverBakeOnly or -RainCoverRebake a refusal ends the run as an error; otherwise it goes on with the
+			// matching tiles.
+			if (R.bBakeOnly || R.bRebake)
+			{
+				UE_LOG(LogForgottenThird, Error,
+					TEXT("RainCover bake refused: r.Nanite.MaxPixelsPerEdge %.6f (the bake needs %.6f; -1: no such cvar), shipping %d; %d tiles left open; the run ends."),
+					Ppe, ftcore::kRainCoverBakeMaxPixelsPerEdge, UE_BUILD_SHIPPING != 0 ? 1 : 0, Refused);
+				R.State = FFTRainRing::Done;
+				FTRequestExit(1, TEXT("RainCoverBakeRefused"));
+				return;
+			}
+			UE_LOG(LogForgottenThird, Warning,
+				TEXT("RainCover bake refused: r.Nanite.MaxPixelsPerEdge %.6f (the bake needs %.6f; -1: no such cvar), shipping %d; %d tiles left open; on with the matching tiles."),
+				Ppe, ftcore::kRainCoverBakeMaxPixelsPerEdge, UE_BUILD_SHIPPING != 0 ? 1 : 0, Refused);
+		}
 		if (R.ToBake.Num() > 0)
 		{
 			RingSwitches(World, R, true);
@@ -1292,12 +1350,13 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 				continue;
 			}
 			bool bAny = false;
-			float MaxZ = 0.f;
+			float MaxZ = 0.f, MinZ = 0.f;
 			for (const float D : R.Depth)
 			{
 				if (D < kRingFindFarM)
 				{
 					MaxZ = bAny ? FMath::Max(MaxZ, kRingFindTopM - D) : kRingFindTopM - D;
+					MinZ = bAny ? FMath::Min(MinZ, kRingFindTopM - D) : kRingFindTopM - D;
 					bAny = true;
 				}
 			}
@@ -1311,20 +1370,46 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 			}
 			else
 			{
-				F.topZ = MaxZ + kRingMarginM;
+				const float* const Bt = R.BoundsTop.Find(FIntPoint(R.Tiles[Ti].x, R.Tiles[Ti].y));
+				// Ruling 12825 point 9 and ruling 17662: the far that reaches the find's lowest hit from the top raised by bounds,
+				// as the float that meets the clamp's own cap (rainCoverBakeFar); the clamp, run with it, never binds and stays as
+				// the guard.
+				const float FarT = ftcore::rainCoverBakeFar(MaxZ, Bt != nullptr, Bt ? double(*Bt) : 0.0, MinZ, Spec.depthM, kRingMarginM);
+				const ftcore::RainCoverTop Top = ftcore::rainCoverTopClamp(MaxZ, Bt != nullptr, Bt ? double(*Bt) : 0.0, MinZ, FarT, kRingMarginM);
+				F.topZ = float(Top.topZ);
+				R.Deep += FarT > Spec.depthM ? 1 : 0;
+				R.Raised += Top.raisedByBounds ? 1 : 0;
+				R.Clamped += Top.clampedByDepth ? 1 : 0;
+				if (Top.raisedByBounds || Top.clampedByDepth)
+				{
+					UE_LOG(LogForgottenThird, Display, TEXT("RainCover: tile (%d,%d) top %.2f (find max %.2f, bounds %.2f, minZ %.2f): raised by bounds %s, clamped by depth %s."),
+						R.Tiles[Ti].x, R.Tiles[Ti].y, F.topZ, MaxZ, Bt ? *Bt : 0.f, MinZ, Top.raisedByBounds ? TEXT("yes") : TEXT("no"),
+						Top.clampedByDepth ? TEXT("yes") : TEXT("no"));
+				}
 #if !UE_BUILD_SHIPPING
 				if (R.WitnessList.Contains(Ti))
 				{
 					RingLandLog(World, TEXT("bake"), R.Tiles[Ti].x, R.Tiles[Ti].y, F.cx * 100.0, F.cy * 100.0, Spec.sizeM * 50.0);
 				}
 #endif
-				if (!RingDraw(*RingCapture, *RingTarget, F, Spec.depthM, R.Pixels, R.Depth))
+				if (!RingDraw(*RingCapture, *RingTarget, F, FarT, R.Pixels, R.Depth))
 				{
 					continue;
 				}
 				ftcore::RainCoverR16Range Range;
-				ftcore::rainCoverR16Pack(R.Depth.GetData(), N, F.topZ, Spec.depthM, R.Codes.GetData(), Range, kRingTolM);
+				if (!ftcore::rainCoverR16Pack(R.Depth.GetData(), N, F.topZ, FarT, R.Codes.GetData(), Range, kRingTolM))
+				{
+					// Ruling 12825 point 9: a pack past the tolerance refuses the tile, as the guard does: its header is
+					// cleared, it stays open for this run and nothing is written.
+					UE_LOG(LogForgottenThird, Error, TEXT("RainCover pack refused: tile (%d,%d) range %.2f m packs at %.3f mm, over the %.1f mm tolerance; the tile stays open and is not written."),
+						R.Tiles[Ti].x, R.Tiles[Ti].y, Range.maxZ - Range.minZ, ftcore::rainCoverR16Error(Range.maxZ - Range.minZ) * 1000.f, kRingTolM * 1000.f);
+					R.Head[Ti] = ftcore::RainCoverTileHeader{};
+					R.Have[Ti] = 0;
+					++R.PackRefused;
+					continue;
+				}
 				H.topZ = F.topZ;
+				H.farM = FarT;
 				H.minZ = Range.minZ;
 				H.maxZ = Range.maxZ;
 				H.hits = Range.hits;
@@ -1398,6 +1483,8 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 			return;
 		}
 		RingSwitches(World, R, false);
+		UE_LOG(LogForgottenThird, Display, TEXT("RainCover: %d tiles raised by bounds, %d clamped by depth, %d drawn past %.0f m (the per-tile far), %d refused by the pack."),
+			R.Raised, R.Clamped, R.Deep, Spec.depthM, R.PackRefused);
 		UE_LOG(LogForgottenThird, Display,
 			TEXT("RainCover ring bake: %d tiles in %.0f ms wall (%.0f ms drawing, packing and writing); %d empty, %d header only, %d with codes; %.1f MiB written; keys against the files they replace: %d equal, %d changed, %d new."),
 			R.Baked, (FPlatformTime::Seconds() - R.BakeT0) * 1000.0, R.BakeMs, R.Empty, R.HeaderOnly - R.Empty, R.Baked - R.HeaderOnly,
@@ -1409,6 +1496,15 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 				*R.CompareDir, R.Same, R.Baked, R.Differ, R.NoCompare);
 		}
 #endif
+		if (R.PackRefused > 0 && (R.bBakeOnly || R.bRebake))
+		{
+			// Under -RainCoverBakeOnly or -RainCoverRebake a pack refusal ends the run as an error, after the whole pass, so one
+			// run names every refused tile.
+			UE_LOG(LogForgottenThird, Error, TEXT("RainCover pack refused %d tiles over the %.1f mm tolerance; the run ends."), R.PackRefused, kRingTolM * 1000.f);
+			R.State = FFTRainRing::Done;
+			FTRequestExit(1, TEXT("RainCoverPackRefused"));
+			return;
+		}
 		R.State = FFTRainRing::Fill;
 		break;
 	}
@@ -1749,7 +1845,7 @@ void UFTRainCoverSubsystem::RingTick(UWorld& World, const FVector& Eye)
 #if !UE_BUILD_SHIPPING
 // The fidelity witness: the shipped 60 m draw (its frame over a camera on the tile, the trimmed set, the shipped LOD and
 // cull unless -RainCoverTileLod0 / -RainCoverTileNoCull, the wind frozen as in the bake) against the baked tiles, texel for
-// texel through the Core mapping. Classes as the 3b probe's: agree within 2 mm; band (the tile's occluder over the square's
+// texel through the Core mapping. Classes as the 3b probe's: agree within kRingTolM (2.5 mm); band (the tile's occluder over the square's
 // top, which the draw can't see); below either far plane; fails: height, gained (tile only), lost (draw only). The meshes
 // standing at the first failing texels are named. Exits when done.
 // Ruling 11-26 item 2: the landscape components under a witness square, at a stage of its draws. In an ortho view the
@@ -1819,6 +1915,18 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 			R.bWitness = false;
 			return;
 		}
+		// Ruling 12583 point 2: the witness draws through the bake's capture (RingDraw), so its Nanite raster runs at the
+		// live r.Nanite.MaxPixelsPerEdge; it takes the bake's gate, and a refusal ends the run as an error.
+		const float Ppe = RingPixelsPerEdge();
+		if (!ftcore::rainCoverMayBake(UE_BUILD_SHIPPING != 0, Ppe))
+		{
+			UE_LOG(LogForgottenThird, Error, TEXT("RainCover witness refused: r.Nanite.MaxPixelsPerEdge %.6f (the bake's is %.6f; -1: no such cvar); the run ends."),
+				Ppe, ftcore::kRainCoverBakeMaxPixelsPerEdge);
+			R.bWitness = false;
+			R.WitnessStep = 2;
+			FTRequestExit(1, TEXT("RainCoverWitnessRefused"));
+			return;
+		}
 		const TCHAR* Sw = FTLookSwitches();
 		R.bWitnessLod0 = FParse::Param(Sw, TEXT("RainCoverTileLod0"));
 		R.bWitnessNoCull = FParse::Param(Sw, TEXT("RainCoverTileNoCull"));
@@ -1841,7 +1949,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 			const ftcore::RainCoverTileHeader& Hw = R.Head[Wt];
 			const ftcore::RainCoverFrame Fb = ftcore::rainCoverTileFrame(Spec, R.Tiles[Wt], Hw.topZ);
 			RingLandLog(World, TEXT("pre"), R.Tiles[Wt].x, R.Tiles[Wt].y, Tf.cx * 100.0, Tf.cy * 100.0, Spec.sizeM * 50.0);
-			R.bPre = R.Have[Wt] && RingDraw(*RingCapture, *RingTarget, Fb, Hw.hits > 0 ? Spec.depthM : kRingFindFarM, R.Pixels, R.DepthPre);
+			R.bPre = R.Have[Wt] && RingDraw(*RingCapture, *RingTarget, Fb, Hw.hits > 0 ? ftcore::rainCoverHeaderFar(Hw.farM, Spec.depthM) : kRingFindFarM, R.Pixels, R.DepthPre);
 			R.WitnessWait = R.WitnessSettle;
 			return;
 		}
@@ -1852,7 +1960,11 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 		R.WitnessWait = -1;
 		++R.WitnessAt;
 		const ftcore::RainCoverFrame F = ftcore::rainCoverFrameAt(Spec, float(TileCam.X) * 0.01f, float(TileCam.Y) * 0.01f, float(TileCam.Z) * 0.01f);
-		if (!RingDraw(*RingCapture, *RingTarget, F, Spec.depthM, R.Pixels, R.Depth))
+		// The witness's own far (ruling 12825 point 9): one per square, from the square's tile, so its draw reaches as deep as
+		// that tile's bake did: depthM, or down to the tile's floor (its top less its far) from the witness's top.
+		const ftcore::RainCoverTileHeader& Hs = R.Head[Wt];
+		const float FarW = Hs.hits > 0 ? FMath::Max(Spec.depthM, F.topZ - (Hs.topZ - ftcore::rainCoverHeaderFar(Hs.farM, Spec.depthM))) : Spec.depthM;
+		if (!RingDraw(*RingCapture, *RingTarget, F, FarW, R.Pixels, R.Depth))
 		{
 			++R.WNoDraw;
 			return;
@@ -1860,7 +1972,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 		// The post redraw: the bake's own frame again, after the settle and the witness draw, into its own buffer.
 		const ftcore::RainCoverTileHeader& Hb = R.Head[Wt];
 		const ftcore::RainCoverFrame Fb = ftcore::rainCoverTileFrame(Spec, R.Tiles[Wt], Hb.topZ);
-		const float FarB = Hb.hits > 0 ? Spec.depthM : kRingFindFarM;
+		const float FarB = Hb.hits > 0 ? ftcore::rainCoverHeaderFar(Hb.farM, Spec.depthM) : kRingFindFarM;
 		RingLandLog(World, TEXT("post"), R.Tiles[Wt].x, R.Tiles[Wt].y, Fb.cx * 100.0, Fb.cy * 100.0, Spec.sizeM * 50.0);
 		const bool bPost = R.Have[Wt] && RingDraw(*RingCapture, *RingTarget, Fb, FarB, R.Pixels, R.DepthPost);
 		const bool bPre = R.bPre && R.DepthPre.Num() == N;
@@ -1872,7 +1984,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 			for (int32 I = 0; I < N; ++I)
 			{
 				const float Dw = R.Depth[I];
-				Out[I] = FMath::IsFinite(Dw) && Dw < Spec.depthM ? F.topZ - Dw : NAN;
+				Out[I] = FMath::IsFinite(Dw) && Dw < FarW ? F.topZ - Dw : NAN;
 				const float Dp = bPost ? R.DepthPost[I] : NAN;
 				Out[N + I] = FMath::IsFinite(Dp) && Dp < FarB ? Fb.topZ - Dp : NAN;
 				const float Dq = bPre ? R.DepthPre[I] : NAN;
@@ -1925,7 +2037,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 				const float X = F.cx + (0.5f - (float(Py) + 0.5f) / float(Res)) * F.sizeM;
 				const float Y = F.cy + ((float(Px) + 0.5f) / float(Res) - 0.5f) * F.sizeM;
 				const float D = R.Depth[Py * Res + Px];
-				const bool bR = FMath::IsFinite(D) && D < Spec.depthM;
+				const bool bR = FMath::IsFinite(D) && D < FarW;
 				const float Rz = F.topZ - D;
 				++R.WTexels;
 				ftcore::RainCoverTile T;
@@ -1942,7 +2054,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 				else
 				{
 					Hp = &R.Head[Ti];
-					Floor = Hp->hits > 0 ? Hp->topZ - Spec.depthM : kRingFindTopM - kRingFindFarM;
+					Floor = Hp->hits > 0 ? Hp->topZ - ftcore::rainCoverHeaderFar(Hp->farM, Spec.depthM) : kRingFindTopM - kRingFindFarM;
 					C = Hp->hits > 0 ? CodesOf(Ti) : nullptr;
 					bT = C && ftcore::rainCoverR16Unpack((*C)[Ty * Res + Tx], Hp->range(), Tz);
 				}
@@ -2025,7 +2137,7 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 					{
 						++R.WBand;
 					}
-					else if (Tz < F.topZ - Spec.depthM)
+					else if (Tz < F.topZ - FarW)
 					{
 						++R.WBelow;
 					}
@@ -2204,13 +2316,13 @@ void UFTRainCoverSubsystem::RingWitnessTick(UWorld& World)
 					{
 						continue;
 					}
-					if (Solo(P, F, Spec.depthM))
+					if (Solo(P, F, FarW))
 					{
 						for (const int32 I : Fail0)
 						{
 							const FFTRainRing::FWRow& Rw = R.WRows[I];
 							const float D = R.DepthSolo[Rw.Py * Res + Rw.Px];
-							Drawn += Rw.Owner == OwnerId && FMath::IsFinite(D) && D < Spec.depthM && FMath::Abs(F.topZ - D - Rw.Tz) <= kRingTolM ? 1 : 0;
+							Drawn += Rw.Owner == OwnerId && FMath::IsFinite(D) && D < FarW && FMath::Abs(F.topZ - D - Rw.Tz) <= kRingTolM ? 1 : 0;
 						}
 					}
 					const AActor* O = P->GetOwner();
